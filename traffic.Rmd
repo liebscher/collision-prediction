@@ -1,0 +1,272 @@
+---
+title: "traffic"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Collision Predicition with Bayesian Generalized Multivariate Linear Modeling
+
+**Alex Liebscher**
+Team: iwishihadmoretime
+Table: 10
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Given a location and time stamp, can we predict hotspots for vehicle collisions? In this investigation, we model collision count data with bayesian generalized univariate linear modeling.
+
+This is an inferential way to determine the effect that each level of each covariate has on the dependent variable, collision count. We want to include the region of San Diego county, the day of the week, and the hour of the day in this model. Due to the Bayesian nature of this model, the results show the impact of each covariate's factors.
+
+Related work:
+Ma, J. (2006). Bayesian multivariate Poisson-Lognormal regression for crash prediction on rural two-lane highways.
+El-Basyouny, K., & Sayed, T. (2009). Collision prediction models using multivariate Poisson-lognormal regression. Accident Analysis & Prevention, 41(4), 820-828.
+Pan, B., Demiryurek, U., & Shahabi, C. (2012, December). Utilizing real-world transportation data for accurate traffic prediction. In 2012 IEEE 12th International Conference on Data Mining (pp. 595-604). IEEE.
+Lovegrove, G. R., & Sayed, T. (2006). Macro-level collision prediction models for evaluating neighbourhood traffic safety. Canadian Journal of Civil Engineering, 33(5), 609-621.
+
+Load the necessary libraries
+
+```{r}
+library(rgdal)
+library(sp)
+library(tidyverse)
+```
+
+Load San Diego County road data.
+
+```{r}
+map = readOGR("./Roads_All", "ROADS_ALL")
+```
+
+View road data summary
+
+```{r}
+summary(map)
+```
+
+Map the road data with corresponding county labels
+
+```{r}
+spplot(map, z="R_ZIP")
+```
+
+Convert this data to a dataframe for easier manipulation
+
+```{r}
+maps.df = data.frame(map)
+```
+
+View a small sample
+
+```{r}
+maps.df[sample(nrow(maps.df), 5), ]
+```
+
+Replace short abbreviated street codes with their longer versions
+
+```{r}
+street_codes = setNames(c("ALLEY","ARCADE","AVENUE","BOULEVARD","BIKEPATH","BRIDGE","BYPASS","CORTE","CROSSING","CAPE", "CIRCLE","CRESCENT","COURT","COVE","CAUSEWAY","DRIVE","DRIVEWAY","EXTENSION","EXPRESSWAY","FERRY","FREEWAY","HIGHWAY","INTERCHANGE","LANE","LOOP","MALL","PATH","POINTE","PLACE","PASS","POINT","PARKWAY","PLAZA","RAMP","ROAD","ROW","SQUARE","STREET","TRAIL","TERRACE","TRUCKTRAIL","WALK","WAY"),
+                        c("AL","AR","AV","BL","BP","BR","BY","CE","CG","CP","CR","CS","CT","CV","CY","DR","DY","EX","EY","FR","FY","HY","IN","LN","LP","ML","PA","PE","PL","PS","PT","PY","PZ","RA","RD","RW","SQ","ST","TL","TR","TT","WK","WY"))
+
+maps.df$RD20SFXFULL = street_codes[unlist(lapply(maps.df$RD20SFX, as.character))]
+```
+
+Load up collision and traffic data
+
+```{r}
+collisions = read.csv("pd_collisions_datasd.csv")
+traffic = read.csv("traffic_counts_datasd.csv")
+```
+
+Not running the following blocks to save time. Uncomment these to create `collisions.csv`.
+
+```{r}
+# collisions$PDO = collisions$injured == 0 & collisions$killed == 0
+```
+
+Assign coordinates to street addresses for collision data. This function takes at least a few minutes! 
+
+```{r}
+# a = apply(collisions, 1, function(x) {
+#   # print(paste(as.numeric(x["street_no"]), x["street_name"], as.character(x["street_type"])))
+#   if (x["street_type"] == " ") {
+#     s = maps.df[maps.df$RD20NAME == as.character(x["street_name"]), ]
+#   } else {
+#     s = maps.df[maps.df$RD20NAME == as.character(x["street_name"]) & maps.df$RD20SFXFULL == as.character(x["street_type"]), ]
+#   }
+#   if (nrow(s) == 0) {
+#     if (x["street_type"] == " ") {
+#       s = maps.df[maps.df$RD30NAME == as.character(x["street_name"]), ]
+#     } else {
+#       s = maps.df[maps.df$RD30NAME == as.character(x["street_name"]) & maps.df$RD20SFXFULL == as.character(x["street_type"]), ]
+#     }
+#   }
+#   # print(s[which.min(abs(as.numeric(x["street_no"]) - as.numeric(s$LLOWADDR))), ])
+#   coords = s[which.min(abs(as.numeric(x["street_no"]) - as.numeric(s$LLOWADDR))), c("FRXCOORD", "FRYCOORD")]
+#   # print(coords)
+#   if (dim(coords) == 0) {
+#     return(c(NA, NA))
+#   }
+#   return(c(coords$FRXCOORD, coords$FRYCOORD))
+# })
+# collisions$x = a[1,]
+# collisions$y = a[2, ]
+```
+
+Since this last function takes a few minutes, save the data so we don't have to load them every time
+
+```{r}
+# write.csv(collisions, "collisions.csv")
+```
+
+Load the collision data
+
+```{r}
+collisions = read.csv("collisions.csv")
+```
+
+Plot each collision in San Diego County
+
+```{r}
+collisions %>%
+  ggplot() + geom_point(aes(x, y), size=0.05)
+```
+
+View all roads in San Diego, as points of where they begin
+
+```{r}
+maps.df %>%
+  ggplot() + geom_point(aes(FRXCOORD, FRYCOORD), size=0.1)
+```
+
+Assign bins to all road coordinates
+
+```{r}
+road_coords = maps.df[, c("FRXCOORD", "FRYCOORD")]
+road_coords = within(road_coords, {
+  x.bin = cut(FRXCOORD, 50, labels = FALSE)
+  y.bin = cut(FRYCOORD, 50, labels = FALSE)
+})
+```
+
+View those aggregated bins
+
+```{r}
+c = road_coords %>%
+  group_by(x.bin, y.bin) %>%
+  summarise(count = n())
+
+ggplot(c) + geom_tile(aes(x=x.bin, y=y.bin, fill=count))
+```
+
+Assign collision data a bin based on the coordinates associated with the road data
+
+```{r}
+x.ordered = road_coords[order(road_coords$FRXCOORD), ]
+collisions$x.bin = factor(x.ordered[findInterval(collisions$x, x.ordered$FRXCOORD), "x.bin"])
+y.ordered = road_coords[order(road_coords$FRYCOORD), ]
+collisions$y.bin = factor(y.ordered[findInterval(collisions$y, y.ordered$FRYCOORD), "y.bin"])
+```
+
+Clear out null values (only a thousand or so)
+
+```{r}
+sum(is.na(collisions))
+collisions = na.omit(collisions)
+```
+
+Clean up the date data and extract those date features
+
+```{r}
+dt = as.POSIXlt(collisions$date_time, tz="PST8PDT")
+collisions$hour = factor(dt$hour)
+collisions$dow = factor(dt$wday)
+collisions$mon = factor(dt$mon)
+collisions$year = factor(1900 + dt$year)
+```
+
+Quick plot of hourly collisions. Peak accidents occur around evening rush hour. There seems to be a measurement error, given the abnormal spike of 00:00-01:00 collisions
+
+```{r}
+ggplot(collisions) + geom_bar(aes(hour))
+```
+
+Split the data into training and testing sets
+
+```{r}
+# train = collisions %>% dplyr::sample_frac(0.8)
+# test = dplyr::anti_join(collisions, train, by="report_id")
+```
+
+Gather together the collision data we care about: we'll model the count of collisions given location and time.
+
+```{r}
+collision_count = collisions %>%
+  group_by(x.bin, y.bin, dow, hour) %>%
+  summarise(count = n())
+
+# collision_count = collision_count %>%
+#   complete(x.bin, y.bin, dow, hour, fill = list(count = 0))
+
+# collision_count = collision_count %>% expand(x.bin, y.bin, dow, hour) %>% left_join(collision_count)
+
+# collision_count$count[is.na(collision_count$count)] = 0
+```
+
+Quick plot of collision counts per lcoation bin
+
+```{r}
+collision_count %>%
+  ggplot() + geom_tile(aes(x=x.bin, y=y.bin, fill=count))
+```
+
+```{r}
+collision_count %>%
+  ggplot() + geom_histogram(aes(count))
+```
+
+
+Load modeling libraries
+
+```{r}
+library(rstan)
+library(brms)
+```
+
+"Hurdle models assume that there is only one process by which a zero can be produced, while zero-inflated models assume that there are 2 different processes that can produce a zero. Sampled via Markov Chain Monte Carlo.
+
+Hurdle models assume 2 types of subjects: (1) those who never experience the outcome and (2) those who always experience the outcome at least once. Zero-inflated models conceptualize subjects as (1) those who never experience the outcome and (2) those who can experience the outcome but don't always." - Darren James (https://stats.stackexchange.com/questions/81457/what-is-the-difference-between-zero-inflated-and-hurdle-models)
+
+https://data.library.virginia.edu/getting-started-with-hurdle-models/
+
+```{r}
+model = brm(count ~ y.bin + x.bin + hour, data = collision_count, family = zero_inflated_poisson("log"), chains = 4, cores=4)
+```
+
+Print out a summary of the model. The coefficients represent the effect of that factor on the intercept (base) value.
+
+```{r}
+summary(model)
+```
+
+Print out a graphical display of the displacement from the intercept for each coefficient. 95% credible intervals shown as well.
+
+```{r}
+marginal_effects(model, probs=c(0.05, 0.95))
+```
+
+```{r}
+d = data.frame(x.bin = c(16, 16), y.bin = c(10, 10), hour=c(14, 4))
+predict(model, d, probs=c(0.05, 0.95))
+```
+
+
+# Conclusion
+
+We have successfully modeled traffic collisions with a Bayesian Possion model. Users could now predict the number of collisions in any of the given coordinate regions at a certain time and day of the week.
+
+Future work would include incorporating traffic density estimates among many other potential covariates.
+
+
+
